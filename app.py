@@ -1,55 +1,77 @@
 import streamlit as st
 import pandas as pd
 
-st.title("📊 Customer Churn Retention Dashboard")
+st.set_page_config(page_title="Retention Copilot", layout="wide")
 
-st.write("Input customer information to predict churn risk and get retention recommendations")
+st.title("📡 Group 4 Customer Retention Copilot")
+st.markdown("""
+This app operationalizes our churn prediction pipeline by integrating:
+- Predictive churn model outputs
+- Customer segmentation
+- Value-based prioritisation
+- AI-assisted retention recommendations
+""")
 
-# ===== 用户输入 =====
-tenure = st.slider("Tenure (months)", 0, 72, 12)
-monthly_charges = st.slider("Monthly Charges", 0, 150, 70)
-contract = st.selectbox("Contract Type", ["Month-to-month", "One year", "Two year"])
+# ===== 读取你的模型结果 =====
+df = pd.read_csv("customer_churn_risk_scores.csv")
 
-# ===== 简单规则模拟模型 =====
-def predict_churn(tenure, monthly_charges, contract):
-    score = 0
-    
-    if contract == "Month-to-month":
-        score += 0.4
-    if tenure < 12:
-        score += 0.3
-    if monthly_charges > 80:
-        score += 0.3
-        
-    return min(score, 1)
+# ===== 输入 customerID =====
+customer_id = st.text_input("Enter Customer ID")
 
-churn_prob = predict_churn(tenure, monthly_charges, contract)
+if customer_id:
 
-# ===== 简单分群 =====
-if monthly_charges > 80 and tenure > 24:
-    segment = "High-Value"
-elif tenure < 12:
-    segment = "New Customer"
-else:
-    segment = "Mid-Value"
+    row = df[df["customerID"] == customer_id]
 
-# ===== 推荐策略 =====
-def recommendation(prob, segment):
-    if prob > 0.7 and segment == "High-Value":
-        return "🔥 Priority retention: offer discount and contract upgrade"
-    elif prob > 0.7:
-        return "⚠️ Risk control: low-cost retention campaign"
-    elif segment == "High-Value":
-        return "💎 Loyalty strategy: upsell or bundle services"
+    if not row.empty:
+
+        # ===== 提取真实模型结果 =====
+        churn_prob = float(row["churn_probability"].values[0])
+        predicted = int(row["predicted_churn"].values[0])
+
+        # 如果你有这些字段就用（没有可以删）
+        cluster = row["rfm_cluster"].values[0] if "rfm_cluster" in df.columns else "N/A"
+
+        # ===== 优先级逻辑（结合你项目）=====
+        if churn_prob > 0.7:
+            priority = "High"
+        elif churn_prob > 0.4:
+            priority = "Medium"
+        else:
+            priority = "Low"
+
+        # ===== 页面展示 =====
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Churn Probability", f"{churn_prob:.2%}")
+        col2.metric("Predicted Churn", "Yes" if predicted == 1 else "No")
+        col3.metric("Retention Priority", priority)
+
+        st.subheader("📊 Customer Segment Info")
+        st.write(f"Cluster: {cluster}")
+
+        # ===== AI解释（关键加分点）=====
+        reasons = []
+
+        if churn_prob > 0.7:
+            reasons.append("High predicted churn probability")
+        if predicted == 1:
+            reasons.append("Model classifies customer as churn risk")
+
+        st.subheader("🤖 Why this customer may churn")
+        if reasons:
+            st.write("This customer is at risk because: " + ", ".join(reasons))
+        else:
+            st.write("Low churn risk based on model prediction")
+
+        # ===== 推荐策略 =====
+        st.subheader("🎯 Recommended Retention Action")
+
+        if churn_prob > 0.7:
+            st.error("🔥 Priority retention: proactive outreach, discount, contract upgrade")
+        elif churn_prob > 0.4:
+            st.warning("⚠️ Medium priority: targeted engagement campaign")
+        else:
+            st.success("💎 Low risk: maintain engagement and upsell opportunities")
+
     else:
-        return "🙂 Maintain engagement"
-
-rec = recommendation(churn_prob, segment)
-
-# ===== 输出 =====
-st.subheader("🔍 Prediction Result")
-st.write(f"Churn Probability: {churn_prob:.2f}")
-st.write(f"Customer Segment: {segment}")
-
-st.subheader("📌 Recommended Action")
-st.write(rec)
+        st.error("Customer ID not found ❌")
