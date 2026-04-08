@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+from openai import OpenAI
 
 st.set_page_config(
     page_title="Group 4 Retention Copilot",
     layout="wide"
 )
+
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # ===== Custom Style =====
 st.markdown("""
@@ -62,10 +65,49 @@ customer_id = st.sidebar.text_input("Enter Customer ID")
 st.sidebar.markdown("---")
 st.sidebar.markdown("### About this app")
 st.sidebar.write(
-    "This workflow interface uses precomputed churn model outputs to support customer-level retention decisions."
+    "This internal decision-support tool uses our churn model outputs to identify high-risk customers and recommend cost-effective retention actions."
 )
 
 # ===== Helper Functions =====
+def generate_ai_explanation(row, churn_prob, predicted, priority):
+    prompt = f"""
+You are a customer retention analyst working for our telecom company.
+
+Your task is to explain this customer's churn risk in a business-oriented way
+and recommend a practical action aligned with our company objectives:
+1. reduce churn
+2. protect high-value customers
+3. avoid unnecessary retention cost
+
+Customer information:
+- Customer ID: {row.get('customerID', 'N/A')}
+- Churn probability: {churn_prob:.2%}
+- Predicted churn: {"Yes" if predicted == 1 else "No"}
+- Retention priority: {priority}
+- Contract: {row.get('Contract', 'N/A')}
+- Tenure: {row.get('tenure', 'N/A')}
+- Monthly Charges: {row.get('MonthlyCharges', 'N/A')}
+- Risk-adjusted CLV: {row.get('risk_adjusted_clv', 'N/A')}
+- Cluster: {row.get('rfm_cluster', 'N/A')}
+
+Please produce:
+1. Risk explanation
+2. Business implication
+3. Recommended retention action
+
+Requirements:
+- Keep it under 140 words
+- Use concise business language
+- Do not invent unavailable variables
+- Make the advice specific to our company, not generic to the telecom industry
+"""
+
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=prompt
+    )
+    return response.output_text
+    
 def get_priority(churn_prob: float) -> str:
     if churn_prob > 0.7:
         return "High"
@@ -179,11 +221,22 @@ with tab1:
             info_col2.write(f"**Risk-Adjusted CLV:** {risk_adjusted_clv}")
 
             st.markdown("### 🤖 AI Risk Explanation")
+
+            # 先保留规则解释，保证即使 API 失败也能展示
             reasons = build_reasons(churn_prob, predicted, row)
             if reasons:
-                st.info("This customer may churn because of: " + "; ".join(reasons) + ".")
+                st.info("Rule-based summary: " + "; ".join(reasons) + ".")
             else:
-                st.info("This customer currently shows relatively low churn risk based on model outputs.")
+                st.info("Rule-based summary: this customer currently shows relatively low churn risk.")
+            
+            # 再加 ChatGPT 按钮，避免每次刷新都调用 API
+            if st.button("Generate Management Recommendation"):
+                with st.spinner("Generating explanation..."):
+                    try:
+                        ai_text = generate_ai_explanation(row, churn_prob, predicted, priority)
+                        st.success(ai_text)
+                    except Exception as e:
+                        st.error(f"OpenAI API call failed: {e}")
 
             st.markdown("### 🎯 Recommended Retention Action")
             recommendation = get_recommendation(churn_prob, row)
