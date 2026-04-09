@@ -8,7 +8,21 @@ st.set_page_config(
     layout="wide"
 )
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# ===== OpenAI client =====
+client = None
+if "OPENAI_API_KEY" in st.secrets:
+    try:
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    except Exception:
+        client = None
+
+# ===== Cluster business rules =====
+cluster_rules = {
+    0: "High-value risk customer: high spending, highest churn risk, moderate tenure. Priority retention is required.",
+    1: "General stable customer: low spending but very stable. Suitable for upsell and cross-sell.",
+    2: "High-value loyal customer: highest value, longest tenure, strong loyalty. Focus on VIP relationship maintenance.",
+    3: "Churn-risk customer: short-tenure, low-activity, low-value customer. Focus on activation and conversion."
+}
 
 # ===== Custom Style =====
 st.markdown("""
@@ -45,13 +59,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 st.caption("Built on Group 4 Customer Analytics Pipeline")
-
 st.markdown("---")
 
 # ===== Load Data =====
 @st.cache_data
 def load_data():
-    df = pd.read_csv("customer_churn_risk_scores.csv")
+    df = pd.read_csv("final_app_dataset.csv")
     df.columns = [c.strip() for c in df.columns]
     if "customerID" in df.columns:
         df["customerID"] = df["customerID"].astype(str).str.strip()
@@ -65,49 +78,56 @@ customer_id = st.sidebar.text_input("Enter Customer ID")
 st.sidebar.markdown("---")
 st.sidebar.markdown("### About this app")
 st.sidebar.write(
-    "This internal decision-support tool uses our churn model outputs to identify high-risk customers and recommend cost-effective retention actions."
+    "This internal decision-support tool uses churn model outputs, customer segmentation, and behavioral profiles to recommend cost-effective retention actions."
 )
 
 # ===== Helper Functions =====
-def generate_ai_explanation(row, churn_prob, predicted, priority):
-    prompt = f"""
-You are a customer retention analyst working for our telecom company.
+def active_service(val):
+    text = str(val).strip().lower()
+    return text not in ["no", "no internet service", "no phone service", "nan", "none", ""]
 
-Your task is to explain this customer's churn risk in a business-oriented way
-and recommend a practical action aligned with our company objectives:
-1. reduce churn
-2. protect high-value customers
-3. avoid unnecessary retention cost
+def get_persona(row):
+    entertainment_score = sum([
+        active_service(row.get("StreamingTV", "No")),
+        active_service(row.get("StreamingMovies", "No"))
+    ])
 
-Customer information:
-- Customer ID: {row.get('customerID', 'N/A')}
-- Churn probability: {churn_prob:.2%}
-- Predicted churn: {"Yes" if predicted == 1 else "No"}
-- Retention priority: {priority}
-- Contract: {row.get('Contract', 'N/A')}
-- Tenure: {row.get('tenure', 'N/A')}
-- Monthly Charges: {row.get('MonthlyCharges', 'N/A')}
-- Risk-adjusted CLV: {row.get('risk_adjusted_clv', 'N/A')}
-- Cluster: {row.get('rfm_cluster', 'N/A')}
+    security_score = sum([
+        active_service(row.get("OnlineSecurity", "No")),
+        active_service(row.get("OnlineBackup", "No")),
+        active_service(row.get("TechSupport", "No"))
+    ])
 
-Please produce:
-1. Risk explanation
-2. Business implication
-3. Recommended retention action
+    if entertainment_score >= 1 and entertainment_score >= security_score:
+        return "Entertainment Seeker"
+    elif security_score >= 1:
+        return "Security Conscious"
+    return "General User"
 
-Requirements:
-- Keep it under 140 words
-- Use concise business language
-- Do not invent unavailable variables
-- Make the advice specific to our company, not generic to the telecom industry
-"""
+def get_lda_risk_flags(row):
+    flags = []
 
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=prompt
-    )
-    return response.output_text
-    
+    if str(row.get("InternetService", "")).strip().lower() == "fiber optic":
+        flags.append("Fiber optic risk")
+    if str(row.get("Contract", "")).strip().lower() == "month-to-month":
+        flags.append("Month-to-month vulnerability")
+    if str(row.get("PaymentMethod", "")).strip().lower() == "electronic check":
+        flags.append("Electronic check friction")
+
+    try:
+        if float(row.get("tenure", 999)) < 12:
+            flags.append("Short-tenure risk")
+    except Exception:
+        pass
+
+    if active_service(row.get("StreamingMovies", "No")) or active_service(row.get("StreamingTV", "No")):
+        flags.append("Entertainment bundle opportunity")
+
+    if active_service(row.get("OnlineSecurity", "No")) or active_service(row.get("TechSupport", "No")):
+        flags.append("Security-value opportunity")
+
+    return flags
+
 def get_priority(churn_prob: float) -> str:
     if churn_prob > 0.7:
         return "High"
@@ -133,65 +153,149 @@ def build_reasons(churn_prob: float, predicted: int, row: pd.Series):
     if predicted == 1:
         reasons.append("the predictive model classifies this customer as churn risk")
 
-    if "Contract" in row.index:
-        contract_val = str(row["Contract"]).strip().lower()
-        if contract_val == "month-to-month":
-            reasons.append("month-to-month contract indicates lower relationship stability")
+    if str(row.get("Contract", "")).strip().lower() == "month-to-month":
+        reasons.append("month-to-month contract indicates lower relationship stability")
 
-    if "tenure" in row.index:
-        try:
-            if float(row["tenure"]) < 12:
-                reasons.append("short tenure suggests a weaker customer relationship")
-        except:
-            pass
+    try:
+        if float(row.get("tenure", 999)) < 12:
+            reasons.append("short tenure suggests a weaker customer relationship")
+    except Exception:
+        pass
 
-    if "MonthlyCharges" in row.index:
-        try:
-            if float(row["MonthlyCharges"]) > 80:
-                reasons.append("higher monthly charges may increase churn sensitivity")
-        except:
-            pass
+    try:
+        if float(row.get("MonthlyCharges", 0)) > 80:
+            reasons.append("higher monthly charges may increase churn sensitivity")
+    except Exception:
+        pass
+
+    if str(row.get("InternetService", "")).strip().lower() == "fiber optic":
+        reasons.append("fiber optic service has been identified as a churn risk driver")
 
     return reasons
 
 def get_recommendation(churn_prob: float, row: pd.Series):
     value_hint = None
 
-    if "risk_adjusted_clv" in row.index:
+    if "risk_adjusted_clv" in row.index and "risk_adjusted_clv" in df.columns:
         try:
             if float(row["risk_adjusted_clv"]) > df["risk_adjusted_clv"].median():
                 value_hint = "high"
             else:
                 value_hint = "low"
-        except:
+        except Exception:
             value_hint = None
 
+    persona = get_persona(row)
+    contract = str(row.get("Contract", "")).strip().lower()
+
     if churn_prob > 0.7 and value_hint == "high":
-        return (
-            "🔥 **Priority retention**: proactive outreach, targeted incentive, "
-            "contract upgrade recommendation, and service recovery follow-up."
-        )
+        if persona == "Entertainment Seeker":
+            return "🔥 **Priority retention**: recommend contract conversion with a value-added entertainment bundle instead of a generic discount."
+        elif persona == "Security Conscious":
+            return "🔥 **Priority retention**: offer upgraded protection / support services tied to a longer-term plan."
+        return "🔥 **Priority retention**: proactive outreach, value-added service bundle, and contract upgrade recommendation."
+
     elif churn_prob > 0.7:
-        return (
-            "⚠️ **High-risk retention**: launch a focused retention campaign with "
-            "low-cost incentives and customer support intervention."
-        )
+        if contract == "month-to-month":
+            return "⚠️ **High-risk retention**: encourage migration to a longer-term contract through a low-cost value-added offer."
+        return "⚠️ **High-risk retention**: launch a focused retention campaign with low-cost incentives and service support."
+
     elif churn_prob > 0.4:
-        return (
-            "🟡 **Medium-priority action**: targeted engagement campaign, personalized "
-            "messaging, and usage-based offer nudges."
-        )
+        return "🟡 **Medium-priority action**: targeted engagement campaign, personalized messaging, and usage-based offer nudges."
+
     else:
-        return (
-            "💎 **Low-risk maintenance**: maintain engagement, explore upsell or bundle "
-            "expansion opportunities."
+        if value_hint == "high":
+            return "💎 **Low-risk growth strategy**: maintain engagement and explore upsell or bundle expansion opportunities."
+        return "💎 **Low-risk maintenance**: keep the customer engaged with light-touch lifecycle communication."
+
+def generate_fallback_explanation(row, churn_prob, predicted, priority):
+    cluster_desc = cluster_rules.get(row.get("rfm_cluster", -1), "Unknown segment")
+    persona = get_persona(row)
+    lda_flags = get_lda_risk_flags(row)
+
+    text = f"""Risk explanation:
+This customer is classified as {priority.lower()} priority with churn probability at {churn_prob:.2%}. The profile aligns with {cluster_desc.lower()}.
+
+Business implication:
+The customer belongs to the {persona} persona. Losing this customer would have {'high' if float(row.get('risk_adjusted_clv', 0)) > df['risk_adjusted_clv'].median() else 'moderate'} business impact based on value and risk.
+
+Recommended retention action:
+{get_recommendation(churn_prob, row)}
+
+Strategic reasoning:
+The recommendation is based on the customer's segment, persona, and current risk signals: {", ".join(lda_flags) if lda_flags else "no major additional risk flag"}.
+"""
+    return text
+
+def generate_ai_explanation(row, churn_prob, predicted, priority):
+    cluster_desc = cluster_rules.get(row.get("rfm_cluster", -1), "Unknown segment")
+    persona = get_persona(row)
+    lda_flags = get_lda_risk_flags(row)
+
+    prompt = f"""
+You are a senior telecom retention strategist working inside our company.
+
+Your goal is to generate a targeted retention strategy based on analytics results.
+
+Customer Profile:
+- Churn Probability: {churn_prob:.2%}
+- Predicted Churn: {"Yes" if predicted else "No"}
+- Priority: {priority}
+- Cluster: {cluster_desc}
+- Persona: {persona}
+- Contract: {row.get("Contract", "N/A")}
+- Tenure: {row.get("tenure", "N/A")}
+- Monthly Charges: {row.get("MonthlyCharges", "N/A")}
+- Risk-adjusted CLV: {row.get("risk_adjusted_clv", "N/A")}
+- Current risk flags: {", ".join(lda_flags) if lda_flags else "No major LDA risk flag triggered"}
+
+Known churn drivers from our analysis:
+- Fiber optic users are high-risk
+- Month-to-month contracts are unstable
+- Low tenure customers are more likely to churn
+- Electronic check may increase churn friction
+
+Company rules:
+- Do NOT give generic discounts
+- Prefer value-added offers (bundles, upgrades)
+- Must consider cost efficiency
+- Align recommendations with the customer's segment and persona
+
+Return in exactly this format:
+
+Risk explanation:
+...
+
+Business implication:
+...
+
+Recommended retention action:
+...
+
+Strategic reasoning:
+...
+"""
+
+    if client is None:
+        return generate_fallback_explanation(row, churn_prob, predicted, priority)
+
+    try:
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt
         )
+        return response.output_text
+    except Exception:
+        return generate_fallback_explanation(row, churn_prob, predicted, priority)
 
 # ===== Tabs =====
 tab1, tab2 = st.tabs(["Customer View", "Segment Overview"])
 
 with tab1:
-    st.markdown('<div class="section-card">Use the sidebar to enter a customer ID and view churn risk, prediction results, and retention recommendations.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-card">Use the sidebar to enter a customer ID and view churn risk, prediction results, customer persona, and retention recommendations.</div>',
+        unsafe_allow_html=True
+    )
 
     if customer_id:
         row = df[df["customerID"] == customer_id]
@@ -204,7 +308,10 @@ with tab1:
             priority = get_priority(churn_prob)
 
             cluster = row["rfm_cluster"] if "rfm_cluster" in row.index else "N/A"
+            cluster_name = row["cluster_name"] if "cluster_name" in row.index else "N/A"
             risk_adjusted_clv = row["risk_adjusted_clv"] if "risk_adjusted_clv" in row.index else "N/A"
+            persona = get_persona(row)
+            lda_flags = get_lda_risk_flags(row)
 
             st.subheader("Customer Risk Summary")
 
@@ -216,27 +323,25 @@ with tab1:
             st.markdown(get_risk_label(churn_prob))
 
             st.markdown("### 📊 Segment / Value Information")
-            info_col1, info_col2 = st.columns(2)
+            info_col1, info_col2, info_col3 = st.columns(3)
             info_col1.write(f"**Cluster:** {cluster}")
+            info_col1.write(f"**Cluster Name:** {cluster_name}")
             info_col2.write(f"**Risk-Adjusted CLV:** {risk_adjusted_clv}")
+            info_col2.write(f"**Persona:** {persona}")
+            info_col3.write(f"**LDA Risk Flags:** {', '.join(lda_flags) if lda_flags else 'None'}")
 
             st.markdown("### 🤖 AI Risk Explanation")
 
-            # 先保留规则解释，保证即使 API 失败也能展示
             reasons = build_reasons(churn_prob, predicted, row)
             if reasons:
                 st.info("Rule-based summary: " + "; ".join(reasons) + ".")
             else:
                 st.info("Rule-based summary: this customer currently shows relatively low churn risk.")
-            
-            # 再加 ChatGPT 按钮，避免每次刷新都调用 API
+
             if st.button("Generate Management Recommendation"):
                 with st.spinner("Generating explanation..."):
-                    try:
-                        ai_text = generate_ai_explanation(row, churn_prob, predicted, priority)
-                        st.success(ai_text)
-                    except Exception as e:
-                        st.error(f"OpenAI API call failed: {e}")
+                    ai_text = generate_ai_explanation(row, churn_prob, predicted, priority)
+                    st.success(ai_text)
 
             st.markdown("### 🎯 Recommended Retention Action")
             recommendation = get_recommendation(churn_prob, row)
@@ -250,8 +355,9 @@ with tab1:
             st.markdown("### 🧾 Raw Customer Output")
             display_cols = [c for c in [
                 "customerID", "churn_probability", "predicted_churn",
-                "rfm_cluster", "risk_adjusted_clv", "tenure",
-                "MonthlyCharges", "Contract"
+                "rfm_cluster", "cluster_name", "risk_adjusted_clv", "tenure",
+                "MonthlyCharges", "Contract", "InternetService", "PaymentMethod",
+                "StreamingTV", "StreamingMovies", "OnlineSecurity", "OnlineBackup", "TechSupport"
             ] if c in df.columns]
 
             st.dataframe(pd.DataFrame([row[display_cols]]), use_container_width=True)
@@ -275,7 +381,7 @@ with tab2:
             group_cols["risk_adjusted_clv"] = "mean"
 
         segment_summary = (
-            df.groupby("rfm_cluster", dropna=False)
+            df.groupby(["rfm_cluster", "cluster_name"], dropna=False)
               .agg(group_cols)
               .reset_index()
               .rename(columns={
@@ -284,6 +390,7 @@ with tab2:
                   "predicted_churn": "predicted_churn_rate",
                   "risk_adjusted_clv": "avg_risk_adjusted_clv"
               })
+              .sort_values("rfm_cluster")
         )
 
         st.dataframe(segment_summary, use_container_width=True)
@@ -302,6 +409,6 @@ with tab2:
 # ===== Footer =====
 st.markdown("---")
 st.markdown(
-    '<p class="small-note">This interface is designed for project presentation and decision-support demonstration using precomputed model outputs.</p>',
+    '<p class="small-note">This interface is designed for project presentation and decision-support demonstration using model outputs, customer segmentation, persona interpretation, and churn-driver insights.</p>',
     unsafe_allow_html=True
 )
