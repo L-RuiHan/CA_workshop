@@ -371,12 +371,19 @@ with tab1:
         )
 
 with tab2:
-    st.subheader("Segment Overview")
+    st.subheader("📊 Segment Overview (Risk × Value Decision Dashboard)")
 
     if "rfm_cluster" in df.columns:
-        group_cols = {"customerID": "count", "churn_probability": "mean"}
+
+        # ===== 1. 聚合数据 =====
+        group_cols = {
+            "customerID": "count",
+            "churn_probability": "mean"
+        }
+
         if "predicted_churn" in df.columns:
             group_cols["predicted_churn"] = "mean"
+
         if "risk_adjusted_clv" in df.columns:
             group_cols["risk_adjusted_clv"] = "mean"
 
@@ -393,18 +400,83 @@ with tab2:
               .sort_values("rfm_cluster")
         )
 
+        # ===== 2. 展示表格 =====
+        st.markdown("### 📋 Segment Summary Table")
         st.dataframe(segment_summary, use_container_width=True)
 
-        st.markdown("### 📈 Churn Probability by Cluster")
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.bar(segment_summary["rfm_cluster"].astype(str), segment_summary["avg_churn_probability"])
-        ax.set_xlabel("Cluster")
-        ax.set_ylabel("Average Churn Probability")
-        ax.set_title("Average Churn Probability Across Clusters")
-        st.pyplot(fig)
+        # ===== 3. Risk vs Value 图（核心图🔥）=====
+        if "avg_risk_adjusted_clv" in segment_summary.columns:
+
+            st.markdown("### 📈 Risk vs Value Positioning")
+
+            fig, ax = plt.subplots(figsize=(8, 5))
+
+            ax.scatter(
+                segment_summary["avg_risk_adjusted_clv"],
+                segment_summary["avg_churn_probability"]
+            )
+
+            # 标注 cluster
+            for i, row in segment_summary.iterrows():
+                ax.annotate(
+                    f"C{int(row['rfm_cluster'])}",
+                    (row["avg_risk_adjusted_clv"], row["avg_churn_probability"])
+                )
+
+            ax.set_xlabel("Average Risk-Adjusted CLV")
+            ax.set_ylabel("Average Churn Probability")
+            ax.set_title("Customer Segments: Risk vs Value")
+
+            st.pyplot(fig)
+
+            st.caption(
+                "Top-right = high value & high risk (priority retention) | "
+                "Bottom-left = low value & low risk (maintenance)"
+            )
+
+        # ===== 4. Segment解释（让老师看懂）=====
+        st.markdown("### 🧠 Segment Interpretation")
+
+        for _, row in segment_summary.iterrows():
+
+            st.markdown(
+                f"""
+**Cluster {int(row['rfm_cluster'])} — {row['cluster_name']}**
+
+- Customers: {row['customers']}
+- Avg Churn Probability: {row['avg_churn_probability']:.2%}
+- Avg CLV: {row.get('avg_risk_adjusted_clv', 'N/A')}
+"""
+            )
+
+        # ===== 5. 策略建议（最关键🔥）=====
+        st.markdown("### 🎯 Recommended Strategy by Segment")
+
+        for _, row in segment_summary.iterrows():
+            cluster_id = int(row["rfm_cluster"])
+            strategy = cluster_rules.get(cluster_id, "No strategy defined")
+
+            st.markdown(
+                f"""
+**Cluster {cluster_id}:**
+- {strategy}
+"""
+            )
+
+        # ===== 6. 总结（商业化收尾）=====
+        st.markdown("### 🚀 Business Insight")
+
+        st.success(
+            """
+This dashboard translates model outputs into actionable business decisions.
+
+By combining churn risk and customer value, we identify priority segments 
+for retention, optimise resource allocation, and improve overall ROI.
+"""
+        )
 
     else:
-        st.warning("No cluster column found in the uploaded result file.")
+        st.warning("No cluster column found in the dataset.")
 
 # ===== Footer =====
 st.markdown("---")
